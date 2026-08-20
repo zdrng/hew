@@ -120,7 +120,12 @@ rustflags_config() { # $1 = triple, $2 = target-cpu (may be empty); prints a --c
 # checks, modelled on the ones in ../PureKauf/backend/Dockerfile, run on every
 # single artifact rather than once on a local debug build.
 # ---------------------------------------------------------------------------
-assert_elf() { # $1 = binary path, $2 = "static" for the musl extras
+# Modes: "" = dynamic PIE, "static" = static PIE, "static-nopie" = static
+# ET_EXEC. The last one is aarch64-unknown-linux-musl: its rustc target spec
+# lacks `static-position-independent-executables`, so +crt-static yields a
+# plain ET_EXEC with no dynamic section — hence no BIND_NOW (RELRO shows up as
+# PT_GNU_RELRO instead) and no image-base ASLR. Not fixable via link flags.
+assert_elf() { # $1 = binary path, $2 = "static"/"static-nopie" for the musl extras
   local bin="$1" mode="${2:-}" problems=() n line
 
   if ! command -v readelf >/dev/null; then
@@ -141,7 +146,10 @@ assert_elf() { # $1 = binary path, $2 = "static" for the musl extras
   # readelf prints them as "BIND_NOW" and "Flags: NOW PIE" respectively, and
   # which of the two appears depends on the linker and on static vs dynamic. Both
   # spellings are accepted; neither one appearing means -z now was lost.
-  if ! readelf -dW "$bin" 2>/dev/null | grep -Eq 'BIND_NOW|Flags:.*\bNOW\b'; then
+  if [ "$mode" = "static-nopie" ]; then
+    readelf -lW "$bin" | grep -q 'GNU_RELRO' \
+      || problems+=("no PT_GNU_RELRO segment — RELRO missing")
+  elif ! readelf -dW "$bin" 2>/dev/null | grep -Eq 'BIND_NOW|Flags:.*\bNOW\b'; then
     problems+=("no BIND_NOW/NOW in the dynamic section — full RELRO missing")
   fi
 
@@ -158,15 +166,20 @@ assert_elf() { # $1 = binary path, $2 = "static" for the musl extras
   fi
 
   # (d) PIE, i.e. the binary can be loaded at a random base (ASLR).
-  readelf -h "$bin" | grep -q 'Type:.*DYN' \
-    || problems+=("ELF type is not DYN — not a PIE, no ASLR")
+  if [ "$mode" = "static-nopie" ]; then
+    readelf -h "$bin" | grep -q 'Type:.*EXEC' \
+      || problems+=("ELF type is not EXEC — expected a static non-PIE here")
+  else
+    readelf -h "$bin" | grep -q 'Type:.*DYN' \
+      || problems+=("ELF type is not DYN — not a PIE, no ASLR")
+  fi
 
   # (e) musl only: a TRUE static PIE. A PT_INTERP header or any NEEDED entry
   # means the artifact still wants a dynamic loader at runtime — which defeats
   # the entire point of shipping a musl build (run anywhere, no libc version
   # matching). This is the check PureKauf's Dockerfile runs before copying the
   # binary onto `scratch`.
-  if [ "$mode" = "static" ]; then
+  if [ "${mode#static}" != "$mode" ]; then
     if readelf -lW "$bin" | grep -qi 'program interpreter'; then
       problems+=("has a program interpreter (PT_INTERP) — not statically linked")
     fi
@@ -180,7 +193,11 @@ assert_elf() { # $1 = binary path, $2 = "static" for the musl extras
     printf '    - %s\n' "${problems[@]}" >&2
     return 1
   fi
-  echo "  hardening OK (stripped, BIND_NOW, GNU_STACK RW, PIE${mode:+, static})"
+  if [ "$mode" = "static-nopie" ]; then
+    echo "  hardening OK (stripped, GNU_RELRO, GNU_STACK RW, static non-PIE)"
+  else
+    echo "  hardening OK (stripped, BIND_NOW, GNU_STACK RW, PIE${mode:+, static})"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -318,6 +335,7 @@ for row in "${SELECTED[@]}"; do
   case "$triple" in
     *-windows-*) skip_assert=1 ;;
     *-apple-darwin) skip_assert=1 ;;
+    aarch64-unknown-linux-musl) mode="static-nopie" ;;
     *-linux-musl) mode="static" ;;
   esac
 

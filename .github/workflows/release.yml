@@ -262,7 +262,8 @@ jobs:
         run: |
           {
             echo "Binaries are built with full RELRO, non-executable stack and PIE;"
-            echo "musl builds are static PIEs. \`-v3\` variants require an x86-64-v3"
+            echo "musl builds are static (PIE except aarch64, which rustc cannot"
+            echo "build as a static PIE). \`-v3\` variants require an x86-64-v3"
             echo "CPU (AVX2, ~2015 onwards) — pick the baseline build for older"
             echo "hardware. After downloading: \`chmod +x <binary>\`."
             echo

@@ -11,7 +11,8 @@
 #      target (Mach-O) — the respective linkers reject or ignore them.
 #   2. `-C target-feature=+crt-static` belongs only on the two musl targets.
 #      On glibc a fully static link is unsupported (NSS/dlopen); on musl it is
-#      what produces the static-PIE artifact we ship.
+#      what produces the static artifact we ship (a static PIE on x86_64; on
+#      aarch64 rustc's target spec has no static-pie support, so ET_EXEC).
 #
 # No mold/lld: a custom linker leaves a `PT_INTERP` header behind and breaks
 # static-PIE for the musl targets.
