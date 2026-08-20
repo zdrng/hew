@@ -60,7 +60,7 @@
       packages = forEachSystem (pkgs: {
         default = pkgs.rustPlatform.buildRustPackage {
           pname = "hew";
-          version = "0.1.0";
+          version = "1.0.0";
           src = self;
           cargoLock.lockFile = "${self}/Cargo.lock";
         };

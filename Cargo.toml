@@ -1,6 +1,6 @@
 [package]
 name = "hew"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 # Private tool, not a crate: guards against an accidental `cargo publish` and
 # lets cargo-deny accept the missing `license` field.
