@@ -1,4 +1,4 @@
-# Manually triggered release pipeline (Blacksmith runners).
+# Manually triggered release pipeline.
 #
 # Order is deliberate: security -> tests -> build all targets -> and only when
 # every artifact exists and passed its hardening assertions does the final job
@@ -15,9 +15,15 @@
 # signed Rust release manifest), dependencies by Cargo.lock + --locked, and the
 # cargo tools by exact version below. Deliberately NOT pinned: the apt packages
 # (musl-tools, gcc-mingw-w64-x86-64 — Ubuntu's archive cannot be usefully
-# hash-pinned) and the Blacksmith runner images. Builds are therefore
+# hash-pinned) and the GitHub-hosted runner images. Builds are therefore
 # input-pinned, not guaranteed bit-for-bit reproducible across environments
 # with differing system linkers.
+#
+# No dependency cache, deliberately: the graph is 22 crates, this workflow is
+# dispatch-only (so a GitHub Actions cache, evicted after 7 days untouched,
+# would cold-miss nearly every run), and the release profile's fat LTO with
+# codegen-units = 1 redoes the expensive half regardless. Not caching also
+# keeps one more third-party action out of the pinning surface above.
 name: release
 
 on:
@@ -48,7 +54,7 @@ env:
 
 jobs:
   security:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -64,7 +70,6 @@ jobs:
           fi
 
       - uses: ./.github/actions/setup-rust
-      - uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5 # v3.0.1
 
       - uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
         with:
@@ -82,11 +87,10 @@ jobs:
 
   test:
     needs: security
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-rust
-      - uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5 # v3.0.1
 
       - uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
         with:
@@ -105,7 +109,7 @@ jobs:
 
   build-x64:
     needs: test
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-rust
@@ -114,9 +118,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools gcc-mingw-w64-x86-64
-
-      # Before the bump, so cache keys come from the committed Cargo.lock.
-      - uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5 # v3.0.1
 
       - name: Bump version (working tree only)
         run: scripts/bump-version.sh "$HEW_VERSION"
@@ -142,7 +143,7 @@ jobs:
 
   build-arm64:
     needs: test
-    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/setup-rust
@@ -151,8 +152,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
-
-      - uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5 # v3.0.1
 
       - name: Bump version (working tree only)
         run: scripts/bump-version.sh "$HEW_VERSION"
@@ -175,12 +174,11 @@ jobs:
 
   build-macos:
     needs: test
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # rust-toolchain.toml brings both darwin stds; x86_64-apple-darwin
-      # cross-links from the arm64 M4 host via the Xcode SDK. No cache action:
-      # useblacksmith/rust-cache is Linux-only and the graph is 21 crates.
+      # cross-links from the arm64 host via the Xcode SDK.
       - uses: ./.github/actions/setup-rust
 
       - name: Bump version (working tree only)
@@ -200,7 +198,7 @@ jobs:
 
   release:
     needs: [build-x64, build-arm64, build-macos]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
