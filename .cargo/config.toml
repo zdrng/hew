@@ -1,0 +1,69 @@
+# Linker hardening and cross-compile wiring.
+#
+# Deliberately NO `[build] rustflags` here: `build.rustflags` applies to
+# dependencies too, so a warning in a foreign crate would break the build.
+# Strictness comes from `[lints.*]` in Cargo.toml (which applies to this crate
+# only) plus `-D warnings` on the CLI — see the `lint` alias at the bottom.
+#
+# Two hard constraints on the flag lists below:
+#   1. `-z relro` / `-z noexecstack` are ELF-only. They must NOT appear under
+#      `[target.x86_64-pc-windows-gnu]` (PE/COFF) or any `*-apple-darwin`
+#      target (Mach-O) — the respective linkers reject or ignore them.
+#   2. `-C target-feature=+crt-static` belongs only on the two musl targets.
+#      On glibc a fully static link is unsupported (NSS/dlopen); on musl it is
+#      what produces the static-PIE artifact we ship.
+#
+# No mold/lld: a custom linker leaves a `PT_INTERP` header behind and breaks
+# static-PIE for the musl targets.
+#
+# ⚠ KEEP IN SYNC WITH `scripts/release.sh`. The `-C target-cpu=x86-64-v3`
+# variants share a triple with their baseline builds, so they cannot live in a
+# separate section here — they need per-invocation flags. Cargo's rustflags
+# sources are mutually exclusive: setting `RUSTFLAGS` *replaces*
+# `target.<triple>.rustflags` rather than appending to it. `release.sh`
+# therefore spells the complete flag list out again for the v3 rows. Any change
+# below must be mirrored there, or the v3 artifacts silently lose RELRO,
+# noexecstack and `+crt-static`.
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+  "-C", "link-arg=-Wl,-z,relro,-z,now", # full RELRO: GOT is read-only after load
+  "-C", "link-arg=-Wl,-z,noexecstack",  # non-executable stack
+]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = [
+  "-C", "target-feature=+crt-static",   # fully static binary (static-PIE)
+  "-C", "link-arg=-Wl,-z,relro,-z,now",
+  "-C", "link-arg=-Wl,-z,noexecstack",
+]
+linker = "x86_64-unknown-linux-musl-cc"
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+  "-C", "link-arg=-Wl,-z,relro,-z,now",
+  "-C", "link-arg=-Wl,-z,noexecstack",
+]
+linker = "aarch64-unknown-linux-gnu-gcc"
+
+[target.aarch64-unknown-linux-musl]
+rustflags = [
+  "-C", "target-feature=+crt-static",
+  "-C", "link-arg=-Wl,-z,relro,-z,now",
+  "-C", "link-arg=-Wl,-z,noexecstack",
+]
+linker = "aarch64-unknown-linux-musl-cc"
+
+# PE/COFF — no `-z` flags (see constraint 1), linker only.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+
+# `aarch64-apple-darwin` / `x86_64-apple-darwin` deliberately have no section:
+# Mach-O takes none of the `-z` flags, and linking needs the Apple SDK plus
+# cctools, which cannot be provided from a NixOS host. `release.sh` skips these
+# two rows unless the host is darwin; real artifacts need a Mac or a darwin CI
+# runner.
+
+[alias]
+# Exactly what CI runs — reproducible locally via `cargo lint`.
+lint = "clippy --all-targets --all-features --locked -- -D warnings"

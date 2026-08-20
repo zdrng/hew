@@ -1,0 +1,24 @@
+[[sections]]
+name = "timestamp"
+attribute = "timestamp"
+affixes = []
+
+[[sections]]
+name = "level"
+attribute = "level"
+affixes = [
+    { condition = { Equals = "INFO" },  prefix = "\u001b[32m", suffix = "\u001b[0m" },
+    { condition = { Equals = "DEBUG" }, prefix = "\u001b[34m", suffix = "\u001b[0m" },
+    { condition = { Equals = "WARN" },  prefix = "\u001b[33m", suffix = "\u001b[0m" },
+    { condition = { Equals = "ERROR" }, prefix = "\u001b[31m", suffix = "\u001b[0m" },
+    { condition = { Regex = "^(WARN|ERROR)$" }, prefix = "\u001b[1m", suffix = "\u001b[0m" },
+    { condition = "Always",             prefix = " ",          suffix = " " },
+]
+
+[[sections]]
+name = "message"
+attribute = "message"
+affixes = [
+    { condition = { Regex = "(?i)69" }, prefix = "\u001b[35m69 Mentioned 😱 ->\u001b[0m ", suffix = "" },
+    { condition = "Always", prefix = "", suffix = "" },
+]

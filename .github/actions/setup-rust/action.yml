@@ -1,0 +1,61 @@
+name: setup-rust
+description: >
+  Install a pinned rustup (version + SHA256, immutable archive URL), then the
+  pinned toolchain, components and targets from rust-toolchain.toml. Used by
+  every job in release.yml. Always installs its own rustup — never trusts
+  whatever the runner image happens to ship.
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned rustup
+      shell: bash
+      # https://static.rust-lang.org/rustup/archive/<v>/... is immutable; the
+      # checksums below were verified against it on 2026-08-20. Bumping the
+      # RUSTUP_VERSION means re-pinning all three hashes.
+      run: |
+        RUSTUP_VERSION=1.29.0
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64)
+            triple=x86_64-unknown-linux-gnu
+            sha256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10 ;;
+          Linux-aarch64)
+            triple=aarch64-unknown-linux-gnu
+            sha256=9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792 ;;
+          Darwin-arm64)
+            triple=aarch64-apple-darwin
+            sha256=aeb4105778ca1bd3c6b0e75768f581c656633cd51368fa61289b6a71696ac7e1 ;;
+          *)
+            echo "No rustup-init pin for $(uname -s)-$(uname -m)" >&2
+            exit 1 ;;
+        esac
+
+        tmp="$(mktemp -d)"
+        curl --proto '=https' --tlsv1.2 -sSf \
+          -o "$tmp/rustup-init" \
+          "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/$triple/rustup-init"
+
+        # macOS has no sha256sum; same fallback release.sh uses.
+        SUMS=(sha256sum -c)
+        command -v sha256sum >/dev/null || SUMS=(shasum -a 256 -c)
+        (cd "$tmp" && echo "$sha256  rustup-init" | "${SUMS[@]}" -)
+
+        chmod +x "$tmp/rustup-init"
+        "$tmp/rustup-init" -y --default-toolchain none --no-modify-path
+        rm -rf "$tmp"
+        echo "$HOME/.cargo/bin" >>"$GITHUB_PATH"
+
+    - name: Install pinned toolchain (rust-toolchain.toml)
+      shell: bash
+      # rustup installs the toolchain-file toolchain via a bare `toolchain
+      # install` (>=1.28); components are hash-verified against the signed
+      # Rust release manifest.
+      run: rustup toolchain install || rustup show
+
+    - name: Toolchain versions
+      shell: bash
+      run: |
+        rustup --version
+        rustup show
+        cargo --version
+        rustc --version

@@ -1,0 +1,287 @@
+# Manually triggered release pipeline (Blacksmith runners).
+#
+# Order is deliberate: security -> tests -> build all targets -> and only when
+# every artifact exists and passed its hardening assertions does the final job
+# bump the version (Cargo.toml, flake.nix, Cargo.lock), commit, tag v<version>,
+# push, and publish the GitHub Release. A red job anywhere means no tag.
+#
+# The build jobs apply the version bump to their working tree only (artifact
+# names carry the new version and --locked stays satisfied); the single
+# authoritative bump commit is created at the end.
+#
+# Pinning policy: every action is pinned by commit SHA (version in the trailing
+# comment), rustup-init by version + SHA256 (see .github/actions/setup-rust),
+# the toolchain by rust-toolchain.toml (components hash-verified against the
+# signed Rust release manifest), dependencies by Cargo.lock + --locked, and the
+# cargo tools by exact version below. Deliberately NOT pinned: the apt packages
+# (musl-tools, gcc-mingw-w64-x86-64 — Ubuntu's archive cannot be usefully
+# hash-pinned) and the Blacksmith runner images. Builds are therefore
+# input-pinned, not guaranteed bit-for-bit reproducible across environments
+# with differing system linkers.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (X.Y.Z)"
+        required: true
+        type: string
+      dry_run:
+        description: "Build and verify everything, but skip commit/tag/release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # The scripts' nix re-exec preamble must stay off: CI ships the toolchain
+  # via rustup (nixpkgs rustc lacks the cross target stdlibs).
+  VERIFY_NO_NIX: "1"
+  CARGO_TERM_COLOR: always
+  HEW_VERSION: ${{ inputs.version }}
+
+jobs:
+  security:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Validate version input
+        run: |
+          if ! [[ "$HEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$ ]]; then
+            echo "Not a semver version: $HEW_VERSION" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code origin "refs/tags/v$HEW_VERSION" >/dev/null 2>&1; then
+            echo "Tag v$HEW_VERSION already exists" >&2
+            exit 1
+          fi
+
+      - uses: ./.github/actions/setup-rust
+      - uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5 # v3.0.1
+
+      - uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+        with:
+          # Versions match the local dev shell (flake.lock's nixpkgs pin).
+          tool: cargo-deny@0.20.2,cargo-machete@0.9.2
+
+      # Supply chain: RUSTSEC advisories, licenses, banned crates (cc,
+      # pkg-config), source registry. cargo-audit is deliberately not run in
+      # addition — deny.toml is the single source of truth (see verify.sh).
+      - name: cargo-deny
+        run: cargo deny check --deny warnings
+
+      - name: cargo-machete
+        run: cargo machete
+
+  test:
+    needs: security
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/setup-rust
+      - uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5 # v3.0.1
+
+      - uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+        with:
+          # Version matches the local dev shell (flake.lock's nixpkgs pin).
+          tool: cargo-nextest@0.9.140
+
+      - name: fmt
+        run: cargo fmt --all --check
+
+      # The repo alias: clippy --all-targets --all-features --locked -- -D warnings
+      - name: clippy
+        run: cargo lint
+
+      - name: nextest
+        run: cargo nextest run --all-features --locked
+
+  build-x64:
+    needs: test
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/setup-rust
+
+      - name: Install cross linkers (musl, mingw)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools gcc-mingw-w64-x86-64
+
+      # Before the bump, so cache keys come from the committed Cargo.lock.
+      - uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5 # v3.0.1
+
+      - name: Bump version (working tree only)
+        run: scripts/bump-version.sh "$HEW_VERSION"
+
+      - name: Build x86_64 gnu/musl + windows rows
+        env:
+          # .cargo/config.toml names the nix cross wrapper; on Ubuntu the musl
+          # linker is musl-gcc. Env beats config.toml. The mingw linker name
+          # (x86_64-w64-mingw32-gcc) matches the apt package as-is.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: scripts/release.sh x86_64-unknown-linux-gnu x86_64-unknown-linux-musl x86_64-pc-windows-gnu
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-x64
+          # Each build job writes only a partial SHA256SUMS; the release job
+          # regenerates it over the merged set.
+          path: |
+            dist/*
+            !dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  build-arm64:
+    needs: test
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/setup-rust
+
+      - name: Install musl linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5 # v3.0.1
+
+      - name: Bump version (working tree only)
+        run: scripts/bump-version.sh "$HEW_VERSION"
+
+      - name: Build aarch64 gnu/musl rows
+        env:
+          # Native host linker for gnu; arm64 musl-tools targets aarch64-musl.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: cc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: scripts/release.sh aarch64-unknown-linux-gnu aarch64-unknown-linux-musl
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-arm64
+          path: |
+            dist/*
+            !dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    needs: test
+    runs-on: blacksmith-6vcpu-macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # rust-toolchain.toml brings both darwin stds; x86_64-apple-darwin
+      # cross-links from the arm64 M4 host via the Xcode SDK. No cache action:
+      # useblacksmith/rust-cache is Linux-only and the graph is 21 crates.
+      - uses: ./.github/actions/setup-rust
+
+      - name: Bump version (working tree only)
+        run: scripts/bump-version.sh "$HEW_VERSION"
+
+      - name: Build darwin rows
+        run: scripts/release.sh aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-macos
+          path: |
+            dist/*
+            !dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [build-x64, build-arm64, build-macos]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # If the branch moved while the builds ran, the bump commit would land on
+      # untested code. Abort instead; re-dispatch from the new head.
+      - name: Assert branch has not moved
+        run: |
+          git fetch origin "refs/heads/$GITHUB_REF_NAME"
+          if [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then
+            echo "Branch $GITHUB_REF_NAME moved since this run started — aborting." >&2
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: Assert artifact set is complete
+        run: |
+          ls -l dist/
+          count=$(find dist/ -mindepth 1 -maxdepth 1 | wc -l)
+          if [ "$count" -ne 9 ]; then
+            echo "Expected 9 artifacts, found $count" >&2
+            exit 1
+          fi
+          for f in dist/*; do
+            case "${f##*/}" in
+              hew-"$HEW_VERSION"-*) ;;
+              *) echo "Unexpected artifact name: $f" >&2; exit 1 ;;
+            esac
+          done
+
+      # Bare filenames, matching release.sh's format, so `sha256sum -c` works
+      # from inside the directory a user downloaded into.
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum -- * >SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Bump version, commit, tag, push
+        if: ${{ !inputs.dry_run }}
+        run: |
+          scripts/bump-version.sh "$HEW_VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # Re-releasing the version already in Cargo.toml is a valid no-op.
+          git diff --cached --quiet || git commit -m "release: v$HEW_VERSION"
+          git tag -a "v$HEW_VERSION" -m "hew v$HEW_VERSION"
+          # Branch and tag land together or not at all.
+          git push --atomic origin "HEAD:refs/heads/$GITHUB_REF_NAME" "refs/tags/v$HEW_VERSION"
+
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Binaries are built with full RELRO, non-executable stack and PIE;"
+            echo "musl builds are static PIEs. \`-v3\` variants require an x86-64-v3"
+            echo "CPU (AVX2, ~2015 onwards) — pick the baseline build for older"
+            echo "hardware. After downloading: \`chmod +x <binary>\`."
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >notes.md
+          gh release create "v$HEW_VERSION" dist/* \
+            --title "hew v$HEW_VERSION" \
+            --verify-tag \
+            --notes-file notes.md
+
+      - name: Upload merged dist (dry run)
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-merged
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

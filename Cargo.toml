@@ -1,0 +1,117 @@
+[package]
+name = "hew"
+version = "0.1.0"
+edition = "2024"
+# Private tool, not a crate: guards against an accidental `cargo publish` and
+# lets cargo-deny accept the missing `license` field.
+publish = false
+# Must stay in sync with rust-toolchain.toml.
+rust-version = "1.97"
+
+[lib]
+name = "hew"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hew"
+path = "src/main.rs"
+
+[dependencies]
+# default-features = false drops the "display" feature and with it the whole
+# toml_writer crate — hew only ever parses a config, it never serialises one.
+toml = { version = "1.1.4", default-features = false, features = ["std", "serde", "parse"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+regex-lite = "0.1.9"
+
+# --- Profiles ---------------------------------------------------------------
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# Deliberately abort, unlike PureKauf's server profile: hew is a pipe filter
+# with no handler layer that could catch a panic and turn it into a response.
+# Aborting drops every unwind table, which is the single largest free size win.
+panic = "abort"
+strip = "symbols"
+debug = false
+debug-assertions = false
+# Also deliberately opposite to PureKauf. That project pays for overflow checks
+# as defense-in-depth on a public HTTP surface; hew has a hot per-line loop and
+# contains no arithmetic at all, so clippy::arithmetic_side_effects is the guard.
+overflow-checks = false
+incremental = false
+rpath = false
+
+# Release codegen with symbols kept, for perf/flamegraph work only.
+[profile.release-debug]
+inherits = "release"
+debug = 1
+strip = "none"
+
+# --- Lints ------------------------------------------------------------------
+
+# IMPORTANT: [lints.clippy] only takes effect under `cargo clippy`. Anything
+# that must break `cargo build` has to live in [lints.rust] — which is why
+# unsafe_code sits there and not below.
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+unused_import_braces = "deny"
+unused_lifetimes = "deny"
+unused_macro_rules = "deny"
+unused_must_use = "deny"
+let_underscore_drop = "deny"
+trivial_numeric_casts = "deny"
+non_ascii_idents = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+missing_errors_doc = "allow"
+doc_markdown = "allow"
+too_long_first_doc_paragraph = "allow"
+# DENY PANICS: every one of these is a way for a log viewer to die on a line it
+# did not expect. hew's contract is that malformed input is passed through, not
+# fatal, so none of them may appear in the formatting path.
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "allow"
+# Further restriction lints:
+unwrap_in_result = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+float_cmp = "deny"
+lossy_float_literal = "deny"
+mem_forget = "deny"
+rc_buffer = "deny"
+verbose_file_reads = "deny"
+try_err = "deny"
+empty_drop = "deny"
+same_name_method = "deny"
+str_to_string = "deny"
+# Unreachable under unsafe_code = "forbid", kept so the intent survives if that
+# ever changes.
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+# Forces #[expect(..., reason = "…")] over a silent #[allow], so a suppression
+# that stops being necessary becomes a hard error instead of rotting in place.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"

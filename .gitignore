@@ -1,0 +1,9 @@
+/target
+
+# Release artifacts from scripts/release.sh (binaries + SHA256SUMS).
+/dist
+
+# Coverage: cargo-llvm-cov drops raw profiles in the CWD and its HTML/LCOV
+# report under target/llvm-cov (already covered by /target, listed for clarity).
+*.profraw
+/target/llvm-cov

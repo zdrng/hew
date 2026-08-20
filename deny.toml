@@ -1,0 +1,111 @@
+# Supply-chain gate (cargo-deny). Runs blocking in CI and locally via
+# scripts/verify.sh. Four independent checks: advisories, licenses, bans,
+# sources.
+#
+# Stance: exceptions are entered here individually and with a justification,
+# never switched off globally. Empty `ignore` and `skip` blocks are the goal —
+# and for hew they are actually achievable: the whole graph is 21 crates, all
+# pure Rust, no C, no TLS, no async runtime. Keeping it that way is the point of
+# this file.
+
+[graph]
+# The seven triples of the release matrix (see plan.md §7). Without this
+# restriction cargo-deny evaluates the full lock-file graph and reports
+# advisories for platform branches that are never compiled.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+  "x86_64-pc-windows-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+version = 2
+# Unmaintained/unsound/yanked are errors here, not hints — otherwise the block
+# drifts into the "noise you click away" category.
+unmaintained = "all"
+yanked = "deny"
+# Empty, and it should stay that way. Every entry needs an id and a reason
+# explaining why the advisory does not apply to this binary.
+ignore = []
+
+[licenses]
+version = 2
+# Verified against Cargo.lock on 2026-08-11: the 20 third-party crates in the
+# graph use exactly four licence expressions —
+#   MIT OR Apache-2.0        (17 crates: serde*, toml*, syn, quote,
+#                             proc-macro2, itoa, hashbrown, indexmap,
+#                             equivalent, serde_spanned, toml_datetime,
+#                             toml_parser, toml_writer)
+#   MIT                      (winnow, zmij)
+#   Unlicense OR MIT         (memchr)
+#   (MIT OR Apache-2.0) AND Unicode-3.0   (unicode-ident)
+# so MIT, Apache-2.0, Unlicense and Unicode-3.0 are the four that are actually
+# load-bearing. The remaining entries are pre-approved permissive licences kept
+# as headroom, so that adding a mainstream crate does not require touching this
+# file; none of them is in use today.
+#
+# Copyleft (GPL/AGPL/LGPL) is deliberately absent: such a dependency should
+# stand out and force a decision rather than slip in silently — this project
+# ships redistributable prebuilt binaries.
+# Exactly the licences the current 20 third-party crates carry, and no more.
+# Speculative "headroom" entries are not an option: cargo-deny reports an
+# unused allowance as `license-not-encountered`, which `--deny warnings` turns
+# into a failure. That is the desired behaviour — a new licence must be a
+# deliberate edit here, not something that slides in under a pre-approved list.
+allow = [
+  "MIT",          # most of the graph, plus winnow / zmij
+  "Apache-2.0",   # dual-licensed half of "MIT OR Apache-2.0"
+  "Unlicense",    # memchr ("Unlicense OR MIT")
+  "Unicode-3.0",  # unicode-ident ("(MIT OR Apache-2.0) AND Unicode-3.0")
+]
+confidence-threshold = 0.9
+
+# `hew` itself carries no `license` field: it is a private application that
+# never lands on crates.io (`publish = false` in Cargo.toml).
+private = { ignore = true }
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+# Version requirements like "1" or "0.8" are NOT wildcards in the sense of this
+# lint (it means `version = "*"`), so they stay allowed.
+allow-wildcard-paths = false
+
+# Empty on purpose. The current lock file contains no duplicate crate at all —
+# every one of the 21 packages appears exactly once. That is the baseline this
+# check defends; a new duplicate must be justified here, one line at a time,
+# rather than waved through.
+skip = []
+
+# hew is a pure-Rust, zero-C-dependency binary today, and the release matrix
+# depends on that: seven triples are cross-compiled from a single NixOS host,
+# two of them static-PIE musl and one mingw. The moment a dependency needs a C
+# compiler at build time, that matrix stops working — and it would fail late,
+# per-target, in `release.sh`, not here.
+#
+# Hence the two bans below. Neither is a moral judgement about the crates; they
+# are simply the two markers that reliably indicate "this graph now needs a
+# working cross C toolchain".
+#
+# Deliberately NOT banned:
+#   - `libc`: it is only FFI declarations and turns up legitimately in a lot of
+#     otherwise pure-Rust crates. `unsafe_code = "forbid"` already guarantees
+#     hew itself never calls into it (this is why service.rs uses the safe
+#     `std::io::IsTerminal` instead of `libc::isatty`).
+#   - `openssl-sys`/`native-tls`: the reference project bans these, but hew has
+#     no TLS, no network and no HTTP client of any kind, so the ban would be
+#     decoration. `cc` below catches openssl-sys anyway.
+deny = [
+  { crate = "cc", reason = "would introduce a C build step and break the 7-triple cross matrix (static-PIE musl, mingw)" },
+  { crate = "pkg-config", reason = "implies linking against a system C library; incompatible with +crt-static and with cross-compiling from NixOS" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

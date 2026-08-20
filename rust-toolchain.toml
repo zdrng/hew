@@ -1,0 +1,18 @@
+# Einzige Quelle der Wahrheit für die Rust-Toolchain.
+# Wird gelesen von: flake.nix (via rust-overlay, `rust-bin.fromRustupToolchainFile`)
+# und von CI (via rustup). Ohne diesen Pin driftet nixpkgs-unstable' eigenes
+# rustc/cargo/clippy unabhängig von diesem Repo — Lint-Ergebnisse wären dann
+# nicht reproduzierbar.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer", "llvm-tools"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+  "x86_64-pc-windows-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+]
+profile = "minimal"

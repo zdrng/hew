@@ -1,0 +1,39 @@
+# Panics are the failure signal in tests — allowed there, never in production
+# code. Without these, `cargo clippy --all-targets` could not be run at all,
+# because the deny-panic set in Cargo.toml's [lints.clippy] would fire on every
+# `assert!`/`unwrap()` inside `#[cfg(test)] mod tests`.
+#
+# NOTE: these switches key off `cfg(test)`, which is NOT set for integration
+# tests in `tests/`. Those compile as ordinary crates and need their own
+# `#![expect(clippy::unwrap_used, ...)]` header instead.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
+
+# Not a published crate (`publish = false`) — breaking changes to the API cost
+# nothing, so clippy is free to suggest improvements to public signatures too.
+avoid-breaking-exported-api = false
+
+# Doc comments may name these terms without backticks.
+#
+# Currently a safety net rather than an active rule: `doc_markdown = "allow"`
+# in Cargo.toml's [lints.clippy] switches the lint off wholesale. This list
+# keeps the vocabulary curated for the day that allow is removed. Only terms
+# that `doc_markdown` would actually flag (mixed case) or that this project's
+# docs genuinely use are listed — the lint ignores all-lowercase and all-caps
+# words, so `stdin`/`stdout`/`ANSI` are belt-and-braces.
+doc-valid-idents = [
+  "JSONL",      # the input format: one JSON object per line
+  "stdin",      # the input side of the filter
+  "stdout",     # the output side of the filter
+  "ANSI",       # the escape sequences config.toml's affixes carry
+  "TTY",        # the interactive-flush decision in service::run
+  "BufWriter",  # replaces the line-buffered StdoutLock
+  "IsTerminal", # the safe std trait used instead of an unsafe libc::isatty
+  # MUST stay last-ish and MUST be present: ".." means "keep clippy's built-in
+  # defaults as well". Dropping it would silently discard the whole default
+  # list (iOS, macOS, WebAssembly, …).
+  "..",
+]
